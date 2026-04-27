@@ -1,0 +1,8 @@
+{
+  "name": "AceAgent - Tennis Booking AI",
+  "description": "An autonomous AI agent that calls tennis clubs, waits on hold, and negotiates court reservations based on your specific schedule preferences using Gemini Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
