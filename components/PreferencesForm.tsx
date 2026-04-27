@@ -47,18 +47,50 @@ const PreferencesForm: React.FC<Props> = ({ preferences, setPreferences, disable
              </button>
          </div>
          
+         {/* AI Provider — only meaningful for real calls */}
+         <div className="mb-3">
+            <p className="text-xs font-medium text-slate-400 mb-2">AI Model (real calls only)</p>
+            <div className="flex space-x-2">
+                <button
+                   onClick={() => handleChange('aiProvider', 'gemini')}
+                   disabled={disabled}
+                   className={`flex-1 py-2 text-sm rounded-md transition-colors ${
+                       preferences.aiProvider === 'gemini'
+                       ? 'bg-emerald-700 text-white font-medium'
+                       : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                   } disabled:opacity-50`}
+                >
+                   Gemini 2.5 Flash
+                </button>
+                <button
+                   onClick={() => handleChange('aiProvider', 'openai')}
+                   disabled={disabled}
+                   className={`flex-1 py-2 text-sm rounded-md transition-colors ${
+                       preferences.aiProvider === 'openai'
+                       ? 'bg-violet-600 text-white font-medium'
+                       : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                   } disabled:opacity-50`}
+                >
+                   GPT-4o-mini
+                </button>
+            </div>
+            {preferences.mode === 'simulation' && (
+                <p className="text-xs text-slate-500 mt-1">Simulation always uses Gemini (browser-based)</p>
+            )}
+         </div>
+
          {preferences.mode === 'real' && (
              <div>
                 <label className="flex items-center text-xs font-medium text-slate-400 mb-1">
                     <Globe className="w-3 h-3 mr-1" />
-                    Backend Server URL (e.g. Fly.io / Ngrok)
+                    Backend Server URL (e.g. Railway / Ngrok)
                 </label>
                 <input
                     type="text"
                     value={preferences.backendUrl}
                     onChange={(e) => handleChange('backendUrl', e.target.value)}
                     disabled={disabled}
-                    placeholder="https://your-app.fly.dev"
+                    placeholder="https://your-app.up.railway.app"
                     className="w-full bg-slate-950 border border-slate-600 rounded px-2 py-1.5 text-sm text-white focus:ring-1 focus:ring-red-500 focus:outline-none"
                 />
              </div>

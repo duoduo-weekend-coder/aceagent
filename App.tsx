@@ -16,6 +16,7 @@ export default function App() {
     durationHours: 1,
     matchType: 'Singles',
     mode: 'simulation',
+    aiProvider: 'gemini',
     backendUrl: window.location.hostname === 'localhost'
       ? 'http://localhost:8080'   // local dev: Vite (5173) → backend (8080)
       : window.location.origin    // production: same origin
@@ -98,23 +99,30 @@ export default function App() {
           
           <div className="mt-4 p-4 bg-slate-800/50 rounded-lg border border-slate-700 text-xs text-slate-400">
             <p className="font-semibold text-slate-300 mb-1">
-                {preferences.mode === 'simulation' ? 'Testing Instructions:' : 'Real Call Instructions:'}
+                {preferences.mode === 'simulation' ? `Simulation (${preferences.aiProvider === 'openai' ? 'GPT-4o-mini' : 'Gemini'}):` : 'Real Call Instructions:'}
             </p>
-            {preferences.mode === 'simulation' ? (
+            {preferences.mode === 'simulation' && preferences.aiProvider === 'gemini' && (
                 <ol className="list-decimal pl-4 space-y-1">
-                    <li>Ensure Microphone permissions are allowed.</li>
-                    <li>Set your preferences on the left.</li>
+                    <li>Allow microphone access.</li>
                     <li>Click <strong>Call Tennis Club</strong>.</li>
                     <li><strong>Roleplay:</strong> You are the receptionist. Speak into your mic!</li>
                 </ol>
-            ) : (
+            )}
+            {preferences.mode === 'simulation' && preferences.aiProvider === 'openai' && (
                 <ol className="list-decimal pl-4 space-y-1">
-                    <li>Ensure <strong>server.js</strong> is deployed.</li>
-                    <li>Set <code>GEMINI_API_KEY</code>, <code>TWILIO</code> keys, and <code>EMAIL_PASS</code> in .env.</li>
-                    <li>Enter the Backend URL (e.g. Fly.io).</li>
+                    <li>Run <code>npm start</code> locally (backend must be running).</li>
+                    <li>Set <code>OPENAI_API_KEY</code> in <code>.env</code>.</li>
+                    <li>Allow microphone access.</li>
+                    <li>Click <strong>Call Tennis Club</strong>.</li>
+                    <li><strong>Roleplay:</strong> You are the receptionist. Speak into your mic!</li>
+                </ol>
+            )}
+            {preferences.mode === 'real' && (
+                <ol className="list-decimal pl-4 space-y-1">
+                    <li>Set <code>TWILIO_*</code>, <code>GEMINI_API_KEY</code> or <code>OPENAI_API_KEY</code>, and <code>EMAIL_PASS</code> in .env.</li>
+                    <li>Run <code>npm start</code> + <code>ngrok http 8080</code> (or deploy to Railway).</li>
                     <li>Click <strong>Call Phone (Real)</strong>.</li>
-                    <li>The Live Log above will show the conversation.</li>
-                    <li>Transcript will be emailed after the call.</li>
+                    <li>Transcript is emailed after the call.</li>
                 </ol>
             )}
           </div>

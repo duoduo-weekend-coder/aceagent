@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, FunctionDeclaration, Type } from '@google/genai';
 import { BookingPreferences, CallState, LogEntry } from '../types';
-import { createPcmBlob, decodeAudioData, base64ToUint8Array } from '../services/audioUtils';
+import { createPcmBlob, decodeAudioData, base64ToUint8Array, float32ToPCM16, arrayBufferToBase64 } from '../services/audioUtils';
 import AudioVisualizer from './AudioVisualizer';
 import { Phone, PhoneOff, Mic, Loader2, CheckCircle2, Timer, Globe, Mail } from 'lucide-react';
 
@@ -163,7 +163,8 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
                 body: JSON.stringify({
                     phoneNumber: preferences.tennisCourtPhoneNumber,
                     systemInstruction: getSystemInstruction(),
-                    email: preferences.email
+                    email: preferences.email,
+                    aiProvider: preferences.aiProvider,
                 })
             });
 
@@ -227,7 +228,98 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
         return;
     }
 
-    // --- SIMULATION MODE ---
+    // --- OPENAI SIMULATION (proxied through backend) ---
+    if (preferences.aiProvider === 'openai') {
+      try {
+        setCallState(CallState.DIALING);
+        onStateChange(CallState.DIALING);
+        setIsActive(true);
+        isActiveRef.current = true;
+
+        const wsUrl = cleanBackendUrl.replace(/^http/, 'ws') + '/openai-sim';
+        const simWs = new WebSocket(wsUrl);
+        logSocketRef.current = simWs;
+
+        // OpenAI Realtime uses 24kHz PCM16
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const inputCtx  = new AudioContextClass({ sampleRate: 24000 });
+        const outputCtx = new AudioContextClass({ sampleRate: 24000 });
+        inputAudioContextRef.current  = inputCtx;
+        outputAudioContextRef.current = outputCtx;
+        const analyser = outputCtx.createAnalyser();
+        analyser.fftSize = 256;
+        analyserRef.current = analyser;
+
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+        if (!isActiveRef.current) { endCall(); return; }
+
+        simWs.onopen = () => {
+          simWs.send(JSON.stringify({ type: 'init', systemInstruction: getSystemInstruction() }));
+        };
+
+        simWs.onmessage = async (e) => {
+          if (!isActiveRef.current) return;
+          const msg = JSON.parse(e.data);
+
+          if (msg.type === 'connected') {
+            onLog({ id: Date.now().toString(), source: 'system', message: 'Connected to OpenAI (simulation).', timestamp: new Date() });
+            setCallState(CallState.ON_HOLD);
+            onStateChange(CallState.ON_HOLD);
+
+            const source = inputCtx.createMediaStreamSource(stream);
+            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+            scriptProcessorRef.current = processor;
+            processor.onaudioprocess = (ev) => {
+              if (!isActiveRef.current || simWs.readyState !== WebSocket.OPEN) return;
+              const inputData = ev.inputBuffer.getChannelData(0);
+              let sum = 0; for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
+              setVolume(Math.sqrt(sum / inputData.length));
+              const pcm16 = float32ToPCM16(inputData);
+              simWs.send(JSON.stringify({ type: 'audio', data: arrayBufferToBase64(pcm16.buffer) }));
+            };
+            source.connect(processor);
+            processor.connect(inputCtx.destination);
+          }
+
+          if (msg.type === 'audio') {
+            setCallState(CallState.TALKING);
+            onStateChange(CallState.TALKING);
+            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
+            const audioBuffer = await decodeAudioData(base64ToUint8Array(msg.data), outputCtx, 24000);
+            const src = outputCtx.createBufferSource();
+            src.buffer = audioBuffer;
+            src.connect(analyser); analyser.connect(outputCtx.destination);
+            src.start(nextStartTimeRef.current);
+            nextStartTimeRef.current += audioBuffer.duration;
+          }
+
+          if (msg.type === 'transcript') {
+            const src = msg.role === 'user' ? 'user' : msg.role === 'agent' ? 'agent' : 'system';
+            onLog({ id: Date.now().toString(), source: src, message: msg.text, timestamp: new Date() });
+          }
+
+          if (msg.type === 'booked') {
+            onLog({ id: Date.now().toString(), source: 'agent', message: `BOOKING CONFIRMED! ${JSON.stringify(msg.details)}`, timestamp: new Date() });
+            setCallState(CallState.BOOKED);
+            onStateChange(CallState.BOOKED);
+            setTimeout(() => endCall(), 10000);
+          }
+        };
+
+        simWs.onclose = () => { if (isActiveRef.current) endCall(); };
+        simWs.onerror = (err) => { console.error(err); endCall(); };
+
+      } catch (e) {
+        console.error('OpenAI simulation failed', e);
+        setCallState(CallState.FAILED);
+        onStateChange(CallState.FAILED);
+        endCall();
+      }
+      return;
+    }
+
+    // --- GEMINI SIMULATION MODE ---
     try {
       setCallState(CallState.DIALING);
       onStateChange(CallState.DIALING);

@@ -1,14 +1,15 @@
 export interface BookingPreferences {
   name: string;
   phoneNumber: string;
-  email: string;               // New field
+  email: string;
   tennisCourtPhoneNumber: string;
-  preferredDays: string[]; // e.g., ["Saturday", "Sunday"]
-  weekdayAfterTime: string; // e.g., "16:00"
+  preferredDays: string[];
+  weekdayAfterTime: string;
   courtType: string;
   durationHours: number;
   matchType: 'Singles' | 'Doubles';
   mode: 'simulation' | 'real';
+  aiProvider: 'gemini' | 'openai';
   backendUrl: string;
 }
 
