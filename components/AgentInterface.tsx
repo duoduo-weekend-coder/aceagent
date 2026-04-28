@@ -56,7 +56,7 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
       properties: {
         reason: {
           type: Type.STRING,
-          description: 'What you heard that triggered this. Be specific, e.g. "hold music", "pre-recorded advertisement about tennis lessons", "silence", "automated IVR message".'
+          description: 'What you heard that triggered this. Be specific, e.g. "hold music", "pre-recorded advertisement", "recorded promotional message", "silence", "automated IVR message". Advertisements can be about anything — fitness classes, memberships, upcoming events, etc.'
         },
       },
       required: ['reason'],
@@ -79,6 +79,16 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
   useEffect(() => {
     isActiveRef.current = isActive;
   }, [isActive]);
+
+  // Live voice switching for OpenAI simulation — send session.update mid-call.
+  // Use isActiveRef (not isActive state) to avoid stale closure.
+  useEffect(() => {
+    if (!isActiveRef.current || preferences.mode !== 'simulation' || preferences.aiProvider !== 'openai') return;
+    const ws = logSocketRef.current as WebSocket | null;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'update_voice', voice: preferences.openaiVoice }));
+    }
+  }, [preferences.openaiVoice]);
 
   // Clean up all resources on unmount
   useEffect(() => {
@@ -114,30 +124,42 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
   };
 
   const getSystemInstruction = () => `
-        You are "Ace", a helpful tennis enthusiast assistant calling a local tennis club to book a court.
-        LANGUAGE: ALWAYS Speak in English.
-        YOUR GOAL: Book a court for ${preferences.name}.
-        DETAILS:
-        - Calling: ${preferences.tennisCourtPhoneNumber}
-        - User Name: ${preferences.name}
-        - User Phone: ${preferences.phoneNumber}
-        - Match Type: ${preferences.matchType}
-        - Preferred Days: ${preferences.preferredDays.join(', ')}.
-        - Weekday Availability: After ${preferences.weekdayAfterTime}.
-        - Court Type: ${preferences.courtType}.
-        - Duration: ${preferences.durationHours} hour(s).
+        YOUR ROLE: You are "Ace", an AI agent who has DIALED OUT and is currently on a phone call with a tennis club. You are the CALLER — a customer. You are NOT the receptionist, NOT the front desk, and NOT a helpful assistant taking requests. Never answer questions as if you work at the club. If you hear yourself starting to act like staff, stop immediately.
+
+        YOUR GOAL: Book a tennis court for ${preferences.name} by speaking with whoever answers this call.
+
+        BOOKING DETAILS:
+        - Club phone: ${preferences.tennisCourtPhoneNumber}
+        - Name to book under: ${preferences.name}
+        - Callback number: ${preferences.phoneNumber}
+        - Match type: ${preferences.matchType}
+        - Preferred days: ${preferences.preferredDays.join(', ')}
+        - Earliest weekday time: After ${preferences.weekdayAfterTime}
+        - Court type: ${preferences.courtType}
+        - Duration: ${preferences.durationHours} hour(s)
+
         BEHAVIOR:
-        1. LISTEN FIRST. Do not speak until you know who or what you are talking to.
-        2. IF you hear an automated phone menu (IVR), listen to ALL options completely, then call 'pressDtmfKey' with the digit for court reservations. Do NOT speak to an IVR.
-        3. IF you hear hold music, on-hold music, OR a pre-recorded advertisement/announcement, call 'reportHoldState' immediately and stay completely silent.
-           A live human is someone who greets YOU, pauses for YOUR reply, or says something like "Thank you for holding, how can I help you?".
-           A recording never pauses for you, never addresses you directly, and loops or ends without expecting a response. When in doubt, call 'reportHoldState'.
-        4. WHEN a live human clearly addresses you, greet them and ask for availability.
-        5. Once confirmed, say "Please book that for ${preferences.name}."
-        6. Provide ${preferences.phoneNumber} if asked.
-        7. AFTER booking is confirmed, call the 'confirmBooking' tool.
-        8. When the tool returns success, say "Thank you, have a great day. Goodbye." and stop talking.
-        TONE: Polite, clear, concise English.
+        1. WAIT AND LISTEN first. Do not speak until the other party speaks to you and finishes their greeting.
+        2. IF you hear an automated phone menu (IVR), listen to ALL options, then call 'pressDtmfKey' for the court reservations option. Never speak to an automated system.
+        3. IF you hear hold music, on-hold music, or a pre-recorded advertisement, call 'reportHoldState' immediately and stay completely silent.
+        4. IF a live human says anything like "one moment", "hold on", "let me check", "please hold", or "just a second" — go SILENT immediately. Do NOT say anything. Wait until they return AND speak to you first before responding.
+        5. A live human pauses and waits for your reply. A recording or hold music never does. Use this to tell them apart.
+        6. WHEN a live human addresses you, greet them politely and state your request ONCE — ask about court availability for your preferred days and times. Do not repeat the same request again even if there is silence or a pause. If they ask you something, answer it. If they offer something, respond to it. Trust that they heard you.
+        7. PATIENCE: Do not re-ask, re-state, or summarise your request unless the receptionist explicitly says they did not hear you or asks you to repeat yourself. One ask is enough — let them work.
+        8. ANSWER QUESTIONS DIRECTLY: When the receptionist asks you something (name, phone number, preferred time, court type, etc.), answer only what they asked. Do not re-explain your whole request.
+        9. If they ask for a phone number, give them ${preferences.phoneNumber}.
+        10. Once a slot is offered and you want to take it, say "That sounds great — could you please book that for ${preferences.name}?"
+        11. CONFIRMATION REQUIRED before calling 'confirmBooking': After the receptionist says they are making the reservation, explicitly ask: "Just to confirm — that's [day] at [time] for ${preferences.durationHours} hour(s) under the name ${preferences.name}, right?" Wait for them to say yes or confirm before proceeding.
+        12. Only call 'confirmBooking' after the receptionist has EXPLICITLY confirmed the booking is complete (e.g. "Yes, you're all set", "That's booked", "All confirmed"). Hearing that a slot is available does NOT count. Never call 'confirmBooking' speculatively or based on your own assumption.
+        13. After 'confirmBooking' responds, say "Thank you so much, have a great day. Goodbye." and stop talking.
+
+        TONE: Friendly, patient, natural — like a real person on a phone call, not an agent running a script.
+
+        SPEAKING STYLE:
+        - Use natural contractions: "I'd love", "that's great", "I'll take it"
+        - React warmly but briefly: "Oh perfect!", "That works!", "Sounds good!"
+        - Keep every response to one or two sentences — short, like a real phone call
+        - Never list bullet points, never repeat yourself, never use formal language
       `;
 
   const startCall = async () => {
@@ -165,6 +187,7 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
                     systemInstruction: getSystemInstruction(),
                     email: preferences.email,
                     aiProvider: preferences.aiProvider,
+                    openaiVoice: preferences.openaiVoice || 'ash',
                 })
             });
 
@@ -236,9 +259,10 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
         setIsActive(true);
         isActiveRef.current = true;
 
-        const wsUrl = cleanBackendUrl.replace(/^http/, 'ws') + '/openai-sim';
-        const simWs = new WebSocket(wsUrl);
-        logSocketRef.current = simWs;
+        // Request mic FIRST so we have the stream ready before the socket opens.
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+        if (!isActiveRef.current) { endCall(); return; }
 
         // OpenAI Realtime uses 24kHz PCM16
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -250,12 +274,41 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
         analyser.fftSize = 256;
         analyserRef.current = analyser;
 
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        streamRef.current = stream;
-        if (!isActiveRef.current) { endCall(); return; }
+        // Serial audio queue — OpenAI streams many small delta chunks rapidly.
+        // Decoding each with `await` creates concurrent executions that race over
+        // nextStartTimeRef. Process chunks one-at-a-time to keep scheduling correct.
+        const oaiAudioQueue: string[] = [];
+        let oaiAudioProcessing = false;
+        const flushAudioQueue = async () => {
+          if (oaiAudioProcessing) return;
+          oaiAudioProcessing = true;
+          while (oaiAudioQueue.length > 0) {
+            const data = oaiAudioQueue.shift()!;
+            try {
+              if (outputCtx.state === 'suspended') await outputCtx.resume();
+              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
+              const buf = await decodeAudioData(base64ToUint8Array(data), outputCtx, 24000);
+              const src = outputCtx.createBufferSource();
+              src.buffer = buf;
+              src.connect(analyser); analyser.connect(outputCtx.destination);
+              src.start(nextStartTimeRef.current);
+              nextStartTimeRef.current += buf.duration;
+            } catch (err) { console.error('[OpenAI audio]', err); }
+          }
+          oaiAudioProcessing = false;
+        };
+
+        // Create socket and assign ALL handlers before it can open.
+        const wsUrl = `${window.location.protocol.replace('http', 'ws')}//${window.location.host}/openai-sim`;
+        const simWs = new WebSocket(wsUrl);
+        logSocketRef.current = simWs;
 
         simWs.onopen = () => {
-          simWs.send(JSON.stringify({ type: 'init', systemInstruction: getSystemInstruction() }));
+          simWs.send(JSON.stringify({
+            type: 'init',
+            systemInstruction: getSystemInstruction(),
+            voice: preferences.openaiVoice || 'ash',
+          }));
         };
 
         simWs.onmessage = async (e) => {
@@ -266,6 +319,8 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
             onLog({ id: Date.now().toString(), source: 'system', message: 'Connected to OpenAI (simulation).', timestamp: new Date() });
             setCallState(CallState.ON_HOLD);
             onStateChange(CallState.ON_HOLD);
+            // Ensure AudioContext is running before any audio arrives
+            if (outputCtx.state === 'suspended') await outputCtx.resume();
 
             const source = inputCtx.createMediaStreamSource(stream);
             const processor = inputCtx.createScriptProcessor(4096, 1, 1);
@@ -285,13 +340,8 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
           if (msg.type === 'audio') {
             setCallState(CallState.TALKING);
             onStateChange(CallState.TALKING);
-            nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
-            const audioBuffer = await decodeAudioData(base64ToUint8Array(msg.data), outputCtx, 24000);
-            const src = outputCtx.createBufferSource();
-            src.buffer = audioBuffer;
-            src.connect(analyser); analyser.connect(outputCtx.destination);
-            src.start(nextStartTimeRef.current);
-            nextStartTimeRef.current += audioBuffer.duration;
+            oaiAudioQueue.push(msg.data);
+            flushAudioQueue();
           }
 
           if (msg.type === 'transcript') {
@@ -407,7 +457,7 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
                 for (const fc of msg.toolCall.functionCalls) {
                     if (fc.name === 'reportHoldState') {
                         const reason = (fc.args as { reason?: string })?.reason || 'non-human audio';
-                        onLog({ id: Date.now().toString(), source: 'system', message: `[On hold: ${reason}]`, timestamp: new Date() });
+                        onLog({ id: Date.now().toString(), source: 'system', message: `Music/hold detected — "${reason}". Staying silent.`, timestamp: new Date() });
                         setCallState(CallState.ON_HOLD);
                         onStateChange(CallState.ON_HOLD);
                         activeSessionRef.current?.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: 'Acknowledged. Remain silent and wait.' } } });
@@ -489,82 +539,129 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ preferences, onStateCha
     if (activeSessionRef.current) { activeSessionRef.current.close(); activeSessionRef.current = null; }
   };
 
+  const statusBadge = () => {
+    const map: Record<string, { label: string; cls: string }> = {
+      [CallState.IDLE]:    { label: 'Ready',       cls: 'bg-stone-100 text-stone-500' },
+      [CallState.DIALING]: { label: 'Dialing…',    cls: 'bg-amber-100 text-amber-700' },
+      [CallState.ON_HOLD]: { label: 'On Hold',     cls: 'bg-amber-100 text-amber-700' },
+      [CallState.TALKING]: { label: 'In Progress', cls: 'bg-green-100 text-green-700' },
+      [CallState.BOOKED]:  { label: 'Confirmed!',  cls: 'bg-green-100 text-green-700' },
+      [CallState.FAILED]:  { label: 'Failed',      cls: 'bg-red-100 text-red-600' },
+    };
+    const { label, cls } = map[callState] ?? map[CallState.IDLE];
+    return (
+      <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${cls}`}>
+        {label}
+      </span>
+    );
+  };
+
+  const callBtnClass = () => {
+    if (isActive) {
+      return preferences.mode === 'real'
+        ? 'bg-rose-500 hover:bg-rose-600 shadow-rose-200'
+        : 'bg-stone-700 hover:bg-stone-800 shadow-stone-200';
+    }
+    return preferences.mode === 'real'
+      ? 'bg-rose-500 hover:bg-rose-600 shadow-rose-200'
+      : 'bg-green-700 hover:bg-green-800 shadow-green-200';
+  };
+
   return (
-    <div className="flex flex-col items-center justify-center p-6 bg-slate-900 rounded-2xl border border-slate-700 shadow-2xl relative overflow-hidden">
-      {callState === CallState.TALKING && <div className="absolute inset-0 bg-emerald-500/10 animate-pulse rounded-2xl pointer-events-none" />}
-      
-      <div className={`mb-6 p-6 rounded-full transition-all duration-500 ${
-          callState === CallState.BOOKED ? 'bg-emerald-500/20 ring-2 ring-emerald-500' :
-          isActive ? 'bg-amber-500/10 ring-2 ring-amber-500' : 'bg-slate-800'
-      }`}>
-        {callState === CallState.DIALING ? <Loader2 className="w-12 h-12 text-amber-500 animate-spin" /> :
-         callState === CallState.BOOKED ? <CheckCircle2 className="w-12 h-12 text-emerald-500" /> :
-         isActive ? (preferences.mode === 'real' ? <Globe className="w-12 h-12 text-red-500 animate-pulse" /> : <Mic className={`w-12 h-12 text-amber-500 transition-opacity ${volume > 0.01 ? 'opacity-100' : 'opacity-50'}`} />) :
-         <Phone className="w-12 h-12 text-slate-400" />}
-      </div>
+    <div className="bg-white rounded-3xl border border-stone-100 shadow-sm overflow-hidden">
+      {/* Status strip */}
+      <div className={`h-1 w-full transition-all duration-500 ${
+        callState === CallState.BOOKED  ? 'bg-green-400' :
+        callState === CallState.FAILED  ? 'bg-red-400' :
+        callState === CallState.TALKING ? 'bg-green-400' :
+        callState === CallState.DIALING || callState === CallState.ON_HOLD ? 'bg-amber-400' :
+        'bg-stone-100'
+      }`} />
 
-      <div className="flex flex-col items-center mb-4">
-          <h2 className="text-2xl font-bold text-white mb-2">
-            {callState === CallState.IDLE && "Ready to Call"}
-            {callState === CallState.DIALING && "Dialing..."}
-            {callState === CallState.ON_HOLD && (preferences.mode === 'real' ? "Connecting..." : "On Hold")}
-            {callState === CallState.TALKING && "Call in Progress"}
-            {callState === CallState.BOOKED && "Booking Confirmed!"}
-            {callState === CallState.FAILED && "Call Failed"}
-          </h2>
-          {isActive && (
-              <div className="flex items-center space-x-2 text-slate-400 bg-slate-800/50 px-3 py-1 rounded-full border border-slate-700">
-                  <Timer className="w-4 h-4" />
-                  <span className="font-mono">{formatDuration(duration)}</span>
-              </div>
+      <div className="px-6 pt-6 pb-7 flex flex-col items-center">
+        {/* Status badge */}
+        <div className="mb-5">{statusBadge()}</div>
+
+        {/* Big call button */}
+        <div className="relative mb-5">
+          {isActive && callState === CallState.TALKING && (
+            <span className="absolute inset-0 rounded-full bg-green-400/25 animate-ping" />
           )}
-      </div>
+          <button
+            onClick={isActive ? endCall : startCall}
+            disabled={callState === CallState.FAILED}
+            className={`relative w-24 h-24 rounded-full flex items-center justify-center shadow-lg transition-all duration-200 active:scale-95 disabled:opacity-40 ${callBtnClass()}`}
+          >
+            {callState === CallState.DIALING
+              ? <Loader2 className="w-9 h-9 text-white animate-spin" />
+              : callState === CallState.BOOKED
+              ? <CheckCircle2 className="w-9 h-9 text-white" />
+              : isActive
+              ? <PhoneOff className="w-9 h-9 text-white" />
+              : <Phone className="w-9 h-9 text-white" />
+            }
+          </button>
+        </div>
 
-      {lastError && (
-          <div className="mb-4 bg-red-900/50 border border-red-500/50 p-3 rounded-lg max-w-sm text-center">
-              <p className="text-red-200 text-sm font-semibold">{lastError.message}</p>
-              {lastError.code === 21210 && (
-                  <a 
-                    href="https://console.twilio.com/us1/develop/phone-numbers/manage/verified-caller-ids"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block mt-2 text-xs bg-red-600 hover:bg-red-500 text-white py-1 px-2 rounded transition-colors"
-                  >
-                    Verify Phone Number in Twilio
-                  </a>
-              )}
+        {/* Call label */}
+        <h2 className="text-lg font-black text-stone-800 mb-1 text-center">
+          {callState === CallState.IDLE    && (preferences.mode === 'real' ? 'Call Tennis Club' : 'Simulate Call')}
+          {callState === CallState.DIALING && 'Connecting…'}
+          {callState === CallState.ON_HOLD && 'Waiting on Hold'}
+          {callState === CallState.TALKING && 'Negotiating…'}
+          {callState === CallState.BOOKED  && 'Court Booked!'}
+          {callState === CallState.FAILED  && 'Call Failed'}
+        </h2>
+
+        {/* Duration */}
+        {isActive && (
+          <div className="flex items-center space-x-1.5 text-stone-400 text-sm mb-1">
+            <Timer className="w-3.5 h-3.5" />
+            <span className="font-mono font-semibold">{formatDuration(duration)}</span>
           </div>
-      )}
-      
-      <p className="text-slate-400 text-center mb-8 max-w-xs">
-         {isActive 
-            ? (preferences.mode === 'real' ? "Agent is negotiating on the phone..." : "Simulating. Please Roleplay as the receptionist!") 
-            : (preferences.mode === 'real' ? "Ready to call real tennis court." : "Configure preferences and start simulation.")}
-      </p>
+        )}
 
-      <div className="w-full mb-8">
-        <AudioVisualizer analyser={analyserRef.current} isActive={isActive && preferences.mode === 'simulation'} />
+        {/* Subtitle */}
+        {!isActive && callState !== CallState.FAILED && (
+          <p className="text-stone-400 text-sm text-center">
+            {preferences.mode === 'real'
+              ? `Will dial ${preferences.tennisCourtPhoneNumber}`
+              : 'You play the receptionist'}
+          </p>
+        )}
+
+        {/* Error */}
+        {lastError && (
+          <div className="w-full mt-4 bg-red-50 border border-red-100 rounded-2xl p-4 text-center">
+            <p className="text-red-600 text-sm font-semibold">{lastError.message}</p>
+            {lastError.code === 21210 && (
+              <a
+                href="https://console.twilio.com/us1/develop/phone-numbers/manage/verified-caller-ids"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-block mt-2 text-xs bg-rose-500 hover:bg-rose-600 text-white py-1.5 px-4 rounded-full transition-colors"
+              >
+                Verify in Twilio Console
+              </a>
+            )}
+          </div>
+        )}
+
+        {/* Audio visualizer */}
+        {isActive && preferences.mode === 'simulation' && (
+          <div className="w-full mt-5">
+            <AudioVisualizer analyser={analyserRef.current} isActive={true} />
+          </div>
+        )}
+
+        {/* Mic indicator for real calls */}
+        {isActive && preferences.mode === 'real' && (
+          <div className="mt-5 flex items-center space-x-2 bg-rose-50 border border-rose-100 rounded-2xl px-4 py-2.5">
+            <Globe className="w-4 h-4 text-rose-500 animate-pulse" />
+            <span className="text-rose-600 text-sm font-medium">Agent is on the line</span>
+          </div>
+        )}
       </div>
-
-      {!isActive ? (
-        <button
-          onClick={startCall}
-          className={`flex items-center space-x-2 text-white px-8 py-3 rounded-full font-semibold transition-all shadow-lg active:scale-95 ${
-              preferences.mode === 'real' ? 'bg-red-600 hover:bg-red-500 shadow-red-500/25' : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/25'
-          }`}
-        >
-          <Phone className="w-5 h-5" />
-          <span>{preferences.mode === 'real' ? 'Call Phone (Real)' : 'Call Tennis Club'}</span>
-        </button>
-      ) : (
-        <button
-          onClick={endCall}
-          className="flex items-center space-x-2 bg-slate-700 hover:bg-slate-600 text-white px-8 py-3 rounded-full font-semibold transition-all shadow-lg active:scale-95"
-        >
-          <PhoneOff className="w-5 h-5" />
-          <span>{preferences.mode === 'real' ? 'Hang Up' : 'Hang Up'}</span>
-        </button>
-      )}
     </div>
   );
 };

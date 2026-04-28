@@ -17,6 +17,7 @@ export default defineConfig(({ mode }) => {
         '/twiml':         'http://localhost:8080',
         '/client-log':    { target: 'ws://localhost:8080', ws: true },
         '/media-stream':  { target: 'ws://localhost:8080', ws: true },
+        '/openai-sim':    { target: 'ws://localhost:8080', ws: true },
       },
     },
   };

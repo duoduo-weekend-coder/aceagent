@@ -10,6 +10,7 @@ export interface BookingPreferences {
   matchType: 'Singles' | 'Doubles';
   mode: 'simulation' | 'real';
   aiProvider: 'gemini' | 'openai';
+  openaiVoice: string;
   backendUrl: string;
 }
 

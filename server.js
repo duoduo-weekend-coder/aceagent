@@ -141,7 +141,7 @@ function executeToolCall(name, args, callSid, twilioWs, streamSid, holdDetector,
         const reason = args?.reason || 'non-human audio';
         console.log(`[Hold] Pausing — ${reason}`);
         holdDetector.enter();
-        logEvent(callSid, 'System', `[On hold: ${reason}]`);
+        logEvent(callSid, 'System', `Music/hold detected — "${reason}". Staying silent.`);
         sendToolResponse('Acknowledged. Audio forwarding paused. Remain silent.');
     }
     if (name === 'pressDtmfKey') {
@@ -195,7 +195,7 @@ const reportHoldStateFunction = {
         properties: {
             reason: {
                 type: 'STRING',
-                description: 'What you heard that triggered this. Be specific, e.g. "hold music", "pre-recorded advertisement about tennis lessons", "silence", "automated IVR message".'
+                description: 'What you heard that triggered this. Be specific, e.g. "hold music", "pre-recorded advertisement", "recorded promotional message", "silence", "automated IVR message". Advertisements can be about anything — fitness classes, memberships, upcoming events, etc.'
             }
         },
         required: ['reason'],
@@ -245,6 +245,7 @@ const openAITools = [
 // Opens an OpenAI Realtime WebSocket and returns a thin interface matching our Gemini pattern.
 // OpenAI natively accepts and emits g711_ulaw — no audio conversion needed.
 // opts.inputAudioFormat / outputAudioFormat: 'g711_ulaw' (real calls) or 'pcm16' (simulation)
+// opts.voice: OpenAI voice name (ash, coral, sage, alloy, shimmer, echo, ballad, verse, marin, cedar…)
 function createOpenAISession(systemInstruction, { onopen, onmessage, onclose, onerror }, opts = {}) {
     if (!OPENAI_API_KEY) {
         console.error('[OpenAI] OPENAI_API_KEY not set in .env');
@@ -252,6 +253,7 @@ function createOpenAISession(systemInstruction, { onopen, onmessage, onclose, on
     }
     const inputFmt  = opts.inputAudioFormat  || 'g711_ulaw';
     const outputFmt = opts.outputAudioFormat || 'g711_ulaw';
+    const voice     = opts.voice             || 'ash';
     const oaiWs = new WebSocket(
         `wss://api.openai.com/v1/realtime?model=${OPENAI_MODEL}`,
         { headers: { 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
@@ -262,11 +264,11 @@ function createOpenAISession(systemInstruction, { onopen, onmessage, onclose, on
             session: {
                 modalities: ['audio', 'text'],
                 instructions: systemInstruction,
-                voice: 'alloy',
+                voice: voice,
                 input_audio_format: inputFmt,
                 output_audio_format: outputFmt,
                 input_audio_transcription: { model: 'whisper-1' },
-                turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
+                turn_detection: { type: 'server_vad', threshold: 0.3, prefix_padding_ms: 200, silence_duration_ms: 300 },
                 tools: openAITools,
                 tool_choice: 'auto',
             }
@@ -291,6 +293,10 @@ function createOpenAISession(systemInstruction, { onopen, onmessage, onclose, on
             if (oaiWs.readyState !== WebSocket.OPEN) return;
             oaiWs.send(JSON.stringify({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify({ result }) } }));
             oaiWs.send(JSON.stringify({ type: 'response.create' }));
+        },
+        updateSession: (patch) => {
+            if (oaiWs.readyState === WebSocket.OPEN)
+                oaiWs.send(JSON.stringify({ type: 'session.update', session: patch }));
         },
         close: () => { if (oaiWs.readyState === WebSocket.OPEN) oaiWs.close(); },
     };
@@ -330,7 +336,7 @@ function handleOpenAIMessage(event, callSid, twilioWs, streamSid, holdDetector, 
 
 // 1. Initiate Outbound Call
 app.post('/outbound-call', async (req, res) => {
-    const { phoneNumber, systemInstruction, email, aiProvider } = req.body;
+    const { phoneNumber, systemInstruction, email, aiProvider, openaiVoice } = req.body;
 
     if (!phoneNumber) return res.status(400).json({ error: "Missing phoneNumber" });
     if (!twilioClient) return res.status(500).json({ error: "Twilio not configured" });
@@ -347,7 +353,7 @@ app.post('/outbound-call', async (req, res) => {
 
         // Store by callSid — Twilio won't fetch /twiml until the phone rings,
         // so this is always set before the TwiML handler looks it up
-        callSessions.set(call.sid, { frontendWs: null, systemInstruction, email, aiProvider: aiProvider || 'gemini', transcript: [], booked: false, bookingDetails: null });
+        callSessions.set(call.sid, { frontendWs: null, systemInstruction, email, aiProvider: aiProvider || 'gemini', openaiVoice: openaiVoice || 'ash', transcript: [], booked: false, bookingDetails: null });
 
         console.log(`Call initiated: ${call.sid}`);
         res.json({ callSid: call.sid });
@@ -426,6 +432,7 @@ wss.on('connection', (ws, req) => {
     }
     // C. OPENAI BROWSER SIMULATION PROXY
     else if (pathname === '/openai-sim') {
+        console.log('[OpenAI Sim] Browser connected');
         handleOpenAISimProxy(ws);
     }
     else {
@@ -448,9 +455,20 @@ function handleOpenAISimProxy(clientWs) {
 
         if (msg.type === 'init') {
             oai = createOpenAISession(msg.systemInstruction, {
-                onopen: () => send({ type: 'connected' }),
+
+                // Don't tell the browser it's connected until session.updated fires —
+                // sending audio before that means OpenAI receives it with default format (not pcm16).
+                onopen: () => { /* wait for session.updated */ },
                 onmessage: (event) => {
+                    console.log('[OpenAI Sim] event:', event.type, event.error ? JSON.stringify(event.error) : '');
                     switch (event.type) {
+                        case 'session.updated':
+                            // Session is now configured for pcm16 — safe to start sending audio
+                            send({ type: 'connected' });
+                            break;
+                        case 'input_audio_buffer.speech_started':
+                            console.log('[OpenAI Sim] speech detected');
+                            break;
                         case 'response.audio.delta':
                             send({ type: 'audio', data: event.delta });
                             break;
@@ -471,7 +489,7 @@ function handleOpenAISimProxy(clientWs) {
                                 send({ type: 'booked', details: args });
                                 oai.sendToolResponse(event.call_id, 'Booking Confirmed. Say goodbye.');
                             } else if (event.name === 'reportHoldState') {
-                                send({ type: 'transcript', role: 'system', text: `[On hold: ${args.reason || 'non-human audio'}]` });
+                                send({ type: 'transcript', role: 'system', text: `Music/hold detected — "${args.reason || 'non-human audio'}". Staying silent.` });
                                 oai.sendToolResponse(event.call_id, 'Acknowledged. Remain silent.');
                             } else if (event.name === 'pressDtmfKey') {
                                 send({ type: 'transcript', role: 'agent', text: `[Pressed key: ${args.digit}${args.reason ? ' — ' + args.reason : ''}]` });
@@ -481,17 +499,21 @@ function handleOpenAISimProxy(clientWs) {
                         }
                         case 'error':
                             console.error('[OpenAI Sim] Error:', event.error);
+                            send({ type: 'transcript', role: 'system', text: `[OpenAI error: ${event.error?.message}]` });
                             break;
                     }
                 },
                 onclose: () => { if (clientWs.readyState === WebSocket.OPEN) clientWs.close(); },
                 onerror: (err) => console.error('[OpenAI Sim]', err),
-            }, { inputAudioFormat: 'pcm16', outputAudioFormat: 'pcm16' });
+            }, { inputAudioFormat: 'pcm16', outputAudioFormat: 'pcm16', voice: msg.voice || 'ash' });
 
             if (!oai) { clientWs.close(); }
 
         } else if (msg.type === 'audio' && oai) {
             oai.sendAudio(Buffer.from(msg.data, 'base64'));
+        } else if (msg.type === 'update_voice' && oai) {
+            console.log(`[OpenAI Sim] Voice → ${msg.voice}`);
+            oai.updateSession({ voice: msg.voice });
         }
     });
 
@@ -537,7 +559,8 @@ async function handleMediaStream(ws) {
             console.log(`[Twilio] Stream Start: CallSid=${callSid} provider=${aiProvider}`);
 
             if (aiProvider === 'openai') {
-                console.log(`[OpenAI] Connecting... model=${OPENAI_MODEL}`);
+                const oaiVoice = callSession?.openaiVoice || 'ash';
+                console.log(`[OpenAI] Connecting... model=${OPENAI_MODEL} voice=${oaiVoice}`);
                 const oai = createOpenAISession(systemInstruction, {
                     onopen: () => {
                         console.log(`[OpenAI] ✓ Connected — model: ${OPENAI_MODEL}`);
@@ -560,11 +583,12 @@ async function handleMediaStream(ws) {
                         console.error('[OpenAI] Error:', err);
                         logEvent(callSid, 'System', `[OpenAI error: ${String(err).slice(0, 80)}]`);
                     },
-                });
+                }, { voice: oaiVoice });
                 if (!oai) { ws.close(); return; }
                 aiSendAudio = (buf) => oai.sendAudio(buf);
                 aiSendText  = (txt) => oai.sendText(txt);
                 aiClose     = ()    => oai.close();
+
 
             } else {
                 console.log(`[Gemini] Connecting with model: ${LIVE_MODEL}`);
